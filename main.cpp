@@ -12,222 +12,27 @@
 #include <queue>
 #include <fstream>
 
-#define MIN_PARALLEL_RECURSION_SIZE 2000
+#include "Point.hpp"
+#include "KDNode.hpp"
+#include "globals.h"
+#include "GeometryUtils.hpp"
+#include "DSU.hpp"
+#include "utils.hpp"
+#include "Edge.hpp"
+#include "Kruskal.hpp"  
 
-struct Point
-{
-    std::vector<double> coords;
+// Variables globales para el procesamiento
+std::vector<std::pair<KDNode*, KDNode*>> pairs;     // Almacena pares de nodos KDNode que cumplen con las condiciones de separación
+std::mutex mutex;                                   // Mutex para asegurar acceso seguro en entornos multihilo
+int beta;                                           // Parámetro de control para la cantidad de pares procesados por iteración
+double phi;                                         // Distancia mínima entre pares de nodos en ciertos algoritmos
+std::vector<Edge> bccps;                            // Conjunto de aristas del bosque de componentes conexas
+std::vector<double> coreDist;                       // Distancia del núcleo para cada punto
+Point* ref;                                         // Referencia a los puntos en el conjunto de datos
+int cost;                                           // Costo acumulado en la construcción de árboles de expansión mínima (MST)
+int n;                                              // Número total de puntos
 
-    Point(std::initializer_list<double> values) : coords(values) {}
-
-    double operator[](size_t index) const
-    {
-        return coords[index];
-    }
-
-    double& operator[](size_t index)
-    {
-        return coords[index];
-    }
-
-    size_t size() const
-    {
-        return coords.size();
-    }
-};
-
-struct KDNode
-{
-    Point* point;
-    KDNode* left;
-    KDNode* right;
-    size_t size;
-
-    Point mn, mx;
-    double cdMn, cdMx;
-
-    KDNode(Point& p) : point(&p), left(nullptr), right(nullptr), size(1), mn(p), mx(p), cdMn(std::numeric_limits<double>::max()), cdMx(-1) {}
-};
-
-bool compare(const Point& p1, const Point& p2, int depth)
-{
-    return p1[depth % p1.size()] < p2[depth % p1.size()];
-}
-
-void buildKDTreeParallel(std::vector<Point*>& points, KDNode*& node, int depth = 0)
-{
-    if (points.size() == 1)
-    {
-        node = new KDNode(*points[0]);
-        return;
-    }
-    if (points.empty())
-    {
-        node = nullptr;
-        return;
-    }
-
-    int axis = depth % points[0]->size();
-    std::sort(points.begin(), points.end(), [axis](Point* p1, Point* p2) {
-        return (*p1)[axis] < (*p2)[axis];
-    });
-
-    int median = points.size() / 2;
-    node = new KDNode(*points[median]);
-
-    std::vector<Point*> leftPoints(points.begin(), points.begin() + median);
-    std::vector<Point*> rightPoints(points.begin() + median, points.end());
-
-    if (node->size > MIN_PARALLEL_RECURSION_SIZE)
-    {
-        std::thread leftThread(buildKDTreeParallel, std::ref(leftPoints), std::ref(node->left), depth + 1);
-        std::thread rightThread(buildKDTreeParallel, std::ref(rightPoints), std::ref(node->right), depth + 1);
-
-        leftThread.join();
-        rightThread.join();
-    }
-    else
-    {
-        buildKDTreeParallel(std::ref(leftPoints), std::ref(node->left), depth + 1);
-        buildKDTreeParallel(std::ref(rightPoints), std::ref(node->right), depth + 1);
-    }
-
-    size_t leftSize = node->left ? node->left->size : 0;
-    size_t rightSize = node->right ? node->right->size : 0;
-    node->size = leftSize + rightSize;
-
-    if (!node->left && !node->right)
-        return;
-    if (!node->left)
-    {
-        node->mn = node->right->mn;
-        node->mx = node->right->mx;
-        return;
-    }
-    if (!node->right)
-    {
-        node->mn = node->left->mn;
-        node->mx = node->left->mx;
-        return;
-    }
-
-    for (int i = 0; i < points[0]->size(); i++)
-    {
-        node->mn[i] = std::min(node->left->mn[i], node->right->mn[i]);
-        node->mx[i] = std::max(node->left->mx[i], node->right->mx[i]);
-    }
-}
-
-double getDiameter(KDNode* node)
-{
-    if (!node)
-        return -1.0;
-
-    double ans = 0.0;
-    for (int i = 0; i < node->point->size(); i++)
-        ans = std::max(ans, node->mx[i] - node->mn[i]);
-    return ans;
-}
-
-void printKDTree(KDNode* root, int depth = 0)
-{
-    if (root == nullptr) return;
-
-    printKDTree(root->left, depth + 1);
-
-    std::cout << std::string(depth * 2, ' ') << "(";
-    for (size_t i = 0; i < root->point->size(); ++i)
-    {
-        std::cout << (*root->point)[i];
-        if (i != root->point->size() - 1)
-        {
-            std::cout << ", ";
-        }
-    }
-    std::cout << "), Size: " << root->size << ' ' << root->point << std::endl;
-
-    printKDTree(root->right, depth + 1);
-}
-
-bool wellSeparatedEuclidean(KDNode* u, KDNode* v)
-{
-    const double s = 2;
-
-    double circleDiam_u = 0;
-    double circleDiam_v = 0;
-    double circleDistance = 0;
-    for (int d = 0; d < u->point->size(); d++)
-    {
-        double uTmpDiff = u->mx[d] - u->mn[d];
-        double vTmpDiff = v->mx[d] - v->mn[d];
-        double uTmpAvg = (u->mx[d] + u->mn[d])/2;
-        double vTmpAvg = (v->mx[d] + v->mn[d])/2;
-        circleDistance += (uTmpAvg - vTmpAvg) * (uTmpAvg - vTmpAvg);
-        circleDiam_u += uTmpDiff * uTmpDiff;
-        circleDiam_v += vTmpDiff * vTmpDiff;
-    }
-    circleDiam_u = std::sqrt(circleDiam_u);
-    circleDiam_v = std::sqrt(circleDiam_v);
-
-    double myRadius = std::max(circleDiam_u, circleDiam_v)/2;
-    circleDistance = std::sqrt(circleDistance) - circleDiam_u/2 - circleDiam_v/2;
-
-    return circleDistance >= (s * myRadius);
-}
-
-bool wellSeparatedHDBSCAN(KDNode* u, KDNode* v)
-{
-    double circleDiam_u = 0;
-    double circleDiam_v = 0;
-    double circleDistance = 0;
-    for (int d = 0; d < u->point->size(); d++)
-    {
-        double uTmpDiff = u->mx[d] - u->mn[d];
-        double vTmpDiff = v->mx[d] - v->mn[d];
-        double uTmpAvg = (u->mx[d] + u->mn[d])/2;
-        double vTmpAvg = (v->mx[d] + v->mn[d])/2;
-        circleDistance += (uTmpAvg - vTmpAvg) * (uTmpAvg - vTmpAvg);
-        circleDiam_u += uTmpDiff * uTmpDiff;
-        circleDiam_v += vTmpDiff * vTmpDiff;
-    }
-    circleDiam_u = std::sqrt(circleDiam_u);
-    circleDiam_v = std::sqrt(circleDiam_v);
-
-    double myRadius = std::max(circleDiam_u, circleDiam_v)/2;
-    double myDiam = std::max(2*myRadius, u->cdMx);
-    myDiam = std::max(myDiam, v->cdMx);
-
-    circleDistance = sqrt(circleDistance) - circleDiam_u/2 - circleDiam_v/2;
-    bool geoSep = circleDistance >= 2 * myRadius;
-    circleDistance = std::max(circleDistance, u->cdMn);
-    circleDistance = std::max(circleDistance, v->cdMn);
-
-    if (circleDistance >= myDiam)
-	    return true || geoSep;
-    else
-	    return false || geoSep;
-}
-
-struct Edge
-{
-    Point *u, *v;
-    double weight;
-    bool operator<(Edge const& other)
-    {
-        return weight < other.weight;
-    }
-};
-
-std::vector<std::pair<KDNode*, KDNode*>> pairs;
-std::mutex mutex;
-int beta;
-double phi;
-std::vector<Edge> bccps;
-std::vector<double> coreDist;
-Point* ref;
-int cost;
-int n;
-
+// funcion para encontrar pares bien separados utilizando la recursión paralela
 void findPair(KDNode* a, KDNode* b, bool(*wellSeparated)(KDNode*, KDNode*))
 {
     if (wellSeparated(a, b))
@@ -256,6 +61,7 @@ void findPair(KDNode* a, KDNode* b, bool(*wellSeparated)(KDNode*, KDNode*))
     }
 }
 
+// funcion para dividir el trabajo en múltiples hilos recursivamente usando `wspd` (Well-Separated Pair Decomposition)
 void wspd(KDNode* node, bool(*wellSeparated)(KDNode*, KDNode*))
 {
     if (node->size > 1)
@@ -278,90 +84,7 @@ void wspd(KDNode* node, bool(*wellSeparated)(KDNode*, KDNode*))
     }
 }
 
-struct Dsu
-{
-    std::map<Point*, Point*> dset;
-
-    void makeSet(Point* v)
-    {
-        if (!dset.count(v))
-            dset[v] = v;
-    }
-    Point* findSet(Point* v)
-    {
-        if (!dset.count(v))
-            return nullptr;
-        if (dset[v] == v)
-            return v;
-        return dset[v] = findSet(dset[v]);
-    }
-    void unionSet(Point* a, Point* b)
-    {
-        a = findSet(a);
-        b = findSet(b);
-        if (a != b && a && b)
-            dset[b] = a;
-    }
-};
-
-int kruskal(int n, std::vector<Edge>& edges, std::vector<Edge>& result)
-{
-    int cost = 0;
-
-    Dsu dsu;
-
-    for (auto& e : edges)
-    {
-        dsu.makeSet(e.u);
-        dsu.makeSet(e.v);
-    }
-
-    std::sort(edges.begin(), edges.end());
-
-    for (Edge e : edges)
-    {
-        if (dsu.findSet(e.u) != dsu.findSet(e.v))
-        {
-            cost += e.weight;
-            result.push_back(e);
-            dsu.unionSet(e.u, e.v);
-        }
-    }
-
-    return cost;
-}
-
-double nodeDistance(KDNode *n1, KDNode *n2)
-{
-    for (int d = 0; d < n1->point->size(); ++d)
-    {
-        if (n1->mn[d] > n2->mx[d] || n2->mn[d] > n1->mx[d])
-        {
-            double rsqr = 0;
-            for (int dd = d; dd < n1->point->size(); ++dd)
-            {
-                double tmp = std::max(n1->mn[dd] - n2->mx[dd], n2->mn[dd] - n1->mx[dd]);
-                tmp = std::max(tmp, (double)0);
-                rsqr += tmp * tmp;
-            }
-            return std::sqrt(rsqr);
-        }
-    }
-    return 0;
-}
-
-double distance(Point& a, Point& b)
-{
-    double xx = 0;
-    for (int i = 0; i < a.size(); ++i)
-    {
-        double yy = (a[i] - b[i]);
-        xx += yy * yy;
-    }
-
-    return sqrt(xx);
-}
-
+// funcion para calcular las distancias entre nodos utilizando diferentes metricas (Euclideana, HDBSCAN)
 void bccpEuclidean(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& b)
 {
     if (nodeDistance(n1, n2) > currDist)
