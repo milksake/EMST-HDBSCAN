@@ -9,6 +9,8 @@
 #include <thread>
 #include <mutex>
 #include <limits>
+#include <queue>
+#include <fstream>
 
 #define MIN_PARALLEL_RECURSION_SIZE 2000
 
@@ -42,8 +44,9 @@ struct KDNode
     size_t size;
 
     Point mn, mx;
+    double cdMn, cdMx;
 
-    KDNode(Point& p) : point(&p), left(nullptr), right(nullptr), size(1), mn(p), mx(p) {}
+    KDNode(Point& p) : point(&p), left(nullptr), right(nullptr), size(1), mn(p), mx(p), cdMn(std::numeric_limits<double>::max()), cdMx(-1) {}
 };
 
 bool compare(const Point& p1, const Point& p2, int depth)
@@ -172,6 +175,39 @@ bool wellSeparatedEuclidean(KDNode* u, KDNode* v)
     return circleDistance >= (s * myRadius);
 }
 
+bool wellSeparatedHDBSCAN(KDNode* u, KDNode* v)
+{
+    double circleDiam_u = 0;
+    double circleDiam_v = 0;
+    double circleDistance = 0;
+    for (int d = 0; d < u->point->size(); d++)
+    {
+        double uTmpDiff = u->mx[d] - u->mn[d];
+        double vTmpDiff = v->mx[d] - v->mn[d];
+        double uTmpAvg = (u->mx[d] + u->mn[d])/2;
+        double vTmpAvg = (v->mx[d] + v->mn[d])/2;
+        circleDistance += (uTmpAvg - vTmpAvg) * (uTmpAvg - vTmpAvg);
+        circleDiam_u += uTmpDiff * uTmpDiff;
+        circleDiam_v += vTmpDiff * vTmpDiff;
+    }
+    circleDiam_u = std::sqrt(circleDiam_u);
+    circleDiam_v = std::sqrt(circleDiam_v);
+
+    double myRadius = std::max(circleDiam_u, circleDiam_v)/2;
+    double myDiam = std::max(2*myRadius, u->cdMx);
+    myDiam = std::max(myDiam, v->cdMx);
+
+    circleDistance = sqrt(circleDistance) - circleDiam_u/2 - circleDiam_v/2;
+    bool geoSep = circleDistance >= 2 * myRadius;
+    circleDistance = std::max(circleDistance, u->cdMn);
+    circleDistance = std::max(circleDistance, v->cdMn);
+
+    if (circleDistance >= myDiam)
+	    return true || geoSep;
+    else
+	    return false || geoSep;
+}
+
 struct Edge
 {
     Point *u, *v;
@@ -187,6 +223,10 @@ std::mutex mutex;
 int beta;
 double phi;
 std::vector<Edge> bccps;
+std::vector<double> coreDist;
+Point* ref;
+int cost;
+int n;
 
 void findPair(KDNode* a, KDNode* b, bool(*wellSeparated)(KDNode*, KDNode*))
 {
@@ -384,6 +424,68 @@ void bccpEuclidean(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& 
     }
 }
 
+void bccpHDBSCAN(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& b)
+{
+    if (nodeDistance(n1, n2) > currDist)
+        return;
+
+    if (n1->size == 1 && n2->size == 1)
+    {
+        double nwDist = std::max(distance(*n1->point, *n2->point), coreDist[n1->point - ref]);
+        nwDist = std::max(nwDist, coreDist[n2->point - ref]);
+        if (nwDist < currDist)
+        {
+            a = n1->point;
+            b = n2->point;
+            currDist = nwDist;
+        }
+    }
+    else
+    {
+        if (n1->size == 1)
+        {
+            if (nodeDistance(n1, n2->left) < nodeDistance(n1, n2->right))
+            {
+                bccpHDBSCAN(n1, n2->left, currDist, a, b);
+                bccpHDBSCAN(n1, n2->right, currDist, a, b);
+            }
+            else
+            {
+                bccpHDBSCAN(n1, n2->right, currDist, a, b);
+                bccpHDBSCAN(n1, n2->left, currDist, a, b);
+            }
+        }
+        else if (n2->size == 1)
+        {
+            if (nodeDistance(n2, n1->left) < nodeDistance(n2, n1->right))
+            {
+                bccpHDBSCAN(n1->left, n2, currDist, a, b);
+                bccpHDBSCAN(n1->right, n2, currDist, a, b);
+            }
+            else
+            {
+                bccpHDBSCAN(n1->right, n2, currDist, a, b);
+                bccpHDBSCAN(n1->left, n2, currDist, a, b);
+            }
+        }
+        else
+        {
+            std::pair<KDNode*, KDNode*> ordering[4];
+            ordering[0] = std::make_pair(n1->left, n2->left);
+            ordering[1] = std::make_pair(n1->left, n2->right);
+            ordering[2] = std::make_pair(n1->right, n2->left);
+            ordering[3] = std::make_pair(n1->right, n2->right);
+
+            auto cmp = [&](std::pair<KDNode*,KDNode*> p1, std::pair<KDNode*,KDNode*> p2) {
+                    return nodeDistance(p1.first, p1.second) < nodeDistance(p2.first, p2.second);};
+            std::sort(ordering, ordering + 4, cmp);
+
+            for (int o=0; o<4; ++o) {
+                bccpHDBSCAN(ordering[o].first, ordering[o].second, currDist, a, b);}
+        }
+    }
+}
+
 void splitParallelHelper(const int *first, const int *last, bool(*cond)(int), std::vector<int>& l, std::vector<int>& r)
 {
     std::vector<int> ll, rr;
@@ -421,8 +523,6 @@ void splitParallel(const std::vector<int>& arr, bool(*cond)(int), std::vector<in
     }
 }
 
-int cost;
-
 void parallelKruskal(std::vector<int>& sl1, std::vector<Edge>& result, Dsu& dsu)
 {
     for (auto x : sl1)
@@ -448,8 +548,6 @@ void parallelKruskal(std::vector<int>& sl1, std::vector<Edge>& result, Dsu& dsu)
         dsu.unionSet(e.u, e.v);
     }
 }
-
-int n;
 
 int parallelGeoFilterKruskal(std::vector<Edge>& result, void (*bccp)(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& b))
 {
@@ -516,6 +614,133 @@ int parallelGeoFilterKruskal(std::vector<Edge>& result, void (*bccp)(KDNode* n1,
     return cost;
 }
 
+void knnHelper(KDNode* node, Point& query, int k, int depth, std::priority_queue<std::pair<double, Point*>>& maxHeap)
+{
+    if (node == nullptr)
+        return;
+
+    if (node->size == 1)
+    {
+        double dist = distance(query, *node->point);
+        if (maxHeap.size() < k)
+            maxHeap.push({dist, node->point});
+        else if (dist < maxHeap.top().first)
+        {
+            maxHeap.pop();
+            maxHeap.push({dist, node->point});
+        }
+    }
+
+    int axis = depth % query.coords.size();
+
+    KDNode* first = nullptr;
+    KDNode* second = nullptr;
+
+    if (query.coords[axis] < node->point->coords[axis])
+    {
+        first = node->left;
+        second = node->right;
+    }
+    else
+    {
+        first = node->right;
+        second = node->left;
+    }
+
+    knnHelper(first, query, k, depth + 1, maxHeap);
+
+    if (maxHeap.size() < k || std::abs(query.coords[axis] - node->point->coords[axis]) < maxHeap.top().first)
+        knnHelper(second, query, k, depth + 1, maxHeap);
+}
+
+double knnDistance(Point& query, int k, KDNode* root)
+{
+    std::priority_queue<std::pair<double, Point*>> maxHeap;
+
+    knnHelper(root, query, k, 0, maxHeap);
+
+    while (maxHeap.empty() > 1) {
+        maxHeap.pop();
+    }
+
+    return maxHeap.top().first;
+}
+
+void processCoreDistance(KDNode* nd)
+{
+    if (nd->size == 1)
+    {
+        if (coreDist[nd->point - ref] > nd->cdMx)
+            nd->cdMx = coreDist[nd->point - ref];
+        if (coreDist[nd->point - ref] < nd->cdMn)
+            nd->cdMn = coreDist[nd->point - ref];
+    }
+    else
+    {
+        if (nd->size > MIN_PARALLEL_RECURSION_SIZE)
+        {
+            std::thread leftThread(processCoreDistance, nd->left);
+            std::thread rightThread(processCoreDistance, nd->right);
+
+            leftThread.join();
+            rightThread.join();
+        }
+        else
+        {
+            processCoreDistance(nd->left);
+            processCoreDistance(nd->right);
+        }
+        nd->cdMx = std::max(nd->left->cdMx, nd->right->cdMx);
+        nd->cdMn = std::min(nd->left->cdMn, nd->right->cdMn);
+    }
+}
+
+struct DendroNode
+{
+    size_t a, b;
+    double c;
+    size_t d;
+};
+
+void generateDendrogram(std::vector<Edge>& edges, std::vector<DendroNode>& dendro)
+{
+    std::sort(edges.begin(), edges.end());
+
+    Dsu uf;
+
+    for (auto& e : edges)
+    {
+        uf.makeSet(e.u);
+        uf.makeSet(e.v);
+    }
+
+    size_t idx = n;
+
+    std::vector<size_t> idxMap(n);
+
+    std::vector<size_t> sizes(n);
+
+    for (int i = 0; i < n; i++)
+    {
+        idxMap[i] = i;
+        sizes[i] = 1;
+    }
+
+    dendro.resize(edges.size());
+
+    for(size_t i = 0; i < n-1; ++i)
+    {
+        auto u = uf.findSet(edges[i].u);
+        auto v = uf.findSet(edges[i].v);
+        dendro[i] = {idxMap[u - ref], idxMap[v - ref], edges[i].weight, sizes[u - ref] + sizes[v - ref]};
+        uf.unionSet(u, v);
+        auto newIdx = uf.findSet(u);
+        idxMap[newIdx - ref] = idx;
+        sizes[newIdx - ref] = sizes[u - ref] + sizes[v - ref];
+        idx++;
+    }
+}
+
 int main()
 {
     std::vector<Point> points = {
@@ -550,7 +775,52 @@ int main()
     std::vector<Edge> result;
     parallelGeoFilterKruskal(result, bccpEuclidean);
 
-    std::cout << "Edges of the EMST:\n"; 
+    std::cout << "Edges of the EMST:\n";
+
+    std::ofstream file("emst.txt");
+
+    for (auto& p : points)
+    {
+        file << "0 ";
+        for (auto x : p.coords)
+            file << x << ' ';
+        file << '\n';
+    }
+
+    ref = points.data();
+    for (auto& e : result)
+    {
+        std::cout << '(';
+        for (int i = 0; i < e.u->coords.size(); i++)
+            std::cout << e.u->coords[i] << ((i == e.u->coords.size()-1) ? ") " : ", ");
+        std::cout << "- (";
+        for (int i = 0; i < e.v->coords.size(); i++)
+            std::cout << e.v->coords[i] << ((i == e.v->coords.size()-1) ? ") " : ", ");
+        std::cout << "- " << e.weight << '\n';
+
+        file << "1 " << (e.u - ref) << ' ' << (e.v - ref) << '\n';
+    }
+
+    file.close();
+
+    int minPts = 2;
+    coreDist.resize(points.size());
+
+    for (int i = 0; i < coreDist.size(); i++)
+    {
+        coreDist[i] = knnDistance(points[i], minPts, root);
+    }
+
+    processCoreDistance(root);
+
+    pairs.clear();
+    wspd(root, wellSeparatedHDBSCAN);
+
+    result.clear();
+    bccps.clear();
+    parallelGeoFilterKruskal(result, bccpHDBSCAN);
+    
+    std::cout << "Edges of the HDBSCAN:\n";
 
     for (auto& e : result)
     {
@@ -562,6 +832,16 @@ int main()
             std::cout << e.v->coords[i] << ((i == e.v->coords.size()-1) ? ") " : ", ");
         std::cout << "- " << e.weight << '\n';
     }
+
+    std::vector<DendroNode> dendro;
+    generateDendrogram(result, dendro);
+
+    std::ofstream file2("dendro.txt");
+
+    for (auto& x : dendro)
+        file2 << x.a << ' ' << x.b << ' ' << x.c << ' ' << x.d << '\n';
+
+    file2.close();
 
     return 0;
 }

@@ -1,2 +1,7 @@
 /.vscode
 *.exe
+/env
+dendro.txt
+emst.txt
+dendrogram.png
+emst.png
