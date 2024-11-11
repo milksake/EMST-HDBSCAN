@@ -19,21 +19,21 @@
 #include "DSU.hpp"
 #include "utils.hpp"
 #include "Edge.hpp"
-#include "Kruskal.hpp"  
+#include "Kruskal.hpp"
 
 // Variables globales para el procesamiento
-std::vector<std::pair<KDNode*, KDNode*>> pairs;     // Almacena pares de nodos KDNode que cumplen con las condiciones de separación
-std::mutex mutex;                                   // Mutex para asegurar acceso seguro en entornos multihilo
-int beta;                                           // Parámetro de control para la cantidad de pares procesados por iteración
-double phi;                                         // Distancia mínima entre pares de nodos en ciertos algoritmos
-std::vector<Edge> bccps;                            // Conjunto de aristas del bosque de componentes conexas
-std::vector<double> coreDist;                       // Distancia del núcleo para cada punto
-Point* ref;                                         // Referencia a los puntos en el conjunto de datos
-int cost;                                           // Costo acumulado en la construcción de árboles de expansión mínima (MST)
-int n;                                              // Número total de puntos
+std::vector<std::pair<KDNode *, KDNode *>> pairs; // Almacena pares de nodos KDNode que cumplen con las condiciones de separación
+std::mutex mutex;                                 // Mutex para asegurar acceso seguro en entornos multihilo
+int beta;                                         // Parámetro de control para la cantidad de pares procesados por iteración
+double phi;                                       // Distancia mínima entre pares de nodos en ciertos algoritmos
+std::vector<Edge> bccps;                          // Conjunto de aristas del bosque de componentes conexas
+std::vector<double> coreDist;                     // Distancia del núcleo para cada punto
+Point *ref;                                       // Referencia a los puntos en el conjunto de datos
+int cost;                                         // Costo acumulado en la construcción de árboles de expansión mínima (MST)
+int n;                                            // Número total de puntos
 
 // funcion para encontrar pares bien separados utilizando la recursión paralela
-void findPair(KDNode* a, KDNode* b, bool(*wellSeparated)(KDNode*, KDNode*))
+void findPair(KDNode *a, KDNode *b, bool (*wellSeparated)(KDNode *, KDNode *))
 {
     if (wellSeparated(a, b))
     {
@@ -62,7 +62,7 @@ void findPair(KDNode* a, KDNode* b, bool(*wellSeparated)(KDNode*, KDNode*))
 }
 
 // funcion para dividir el trabajo en múltiples hilos recursivamente usando `wspd` (Well-Separated Pair Decomposition)
-void wspd(KDNode* node, bool(*wellSeparated)(KDNode*, KDNode*))
+void wspd(KDNode *node, bool (*wellSeparated)(KDNode *, KDNode *))
 {
     if (node->size > 1)
     {
@@ -85,7 +85,7 @@ void wspd(KDNode* node, bool(*wellSeparated)(KDNode*, KDNode*))
 }
 
 // funcion para calcular las distancias entre nodos utilizando diferentes metricas (Euclideana, HDBSCAN)
-void bccpEuclidean(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& b)
+void bccpEuclidean(KDNode *n1, KDNode *n2, double &currDist, Point *&a, Point *&b)
 {
     if (nodeDistance(n1, n2) > currDist)
         return;
@@ -130,13 +130,14 @@ void bccpEuclidean(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& 
         }
         else
         {
-            std::pair<KDNode*, KDNode*> ordering[4];
+            std::pair<KDNode *, KDNode *> ordering[4];
             ordering[0] = std::make_pair(n1->left, n2->left);
             ordering[1] = std::make_pair(n1->left, n2->right);
             ordering[2] = std::make_pair(n1->right, n2->left);
             ordering[3] = std::make_pair(n1->right, n2->right);
 
-            auto cmp = [&](std::pair<KDNode*,KDNode*> p1, std::pair<KDNode*,KDNode*> p2) {
+            auto cmp = [&](std::pair<KDNode *, KDNode *> p1, std::pair<KDNode *, KDNode *> p2)
+            {
                 return nodeDistance(p1.first, p1.second) < nodeDistance(p2.first, p2.second);
             };
             std::sort(ordering, ordering + 4, cmp);
@@ -147,7 +148,7 @@ void bccpEuclidean(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& 
     }
 }
 
-void bccpHDBSCAN(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& b)
+void bccpHDBSCAN(KDNode *n1, KDNode *n2, double &currDist, Point *&a, Point *&b)
 {
     if (nodeDistance(n1, n2) > currDist)
         return;
@@ -193,26 +194,28 @@ void bccpHDBSCAN(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& b)
         }
         else
         {
-            std::pair<KDNode*, KDNode*> ordering[4];
+            std::pair<KDNode *, KDNode *> ordering[4];
             ordering[0] = std::make_pair(n1->left, n2->left);
             ordering[1] = std::make_pair(n1->left, n2->right);
             ordering[2] = std::make_pair(n1->right, n2->left);
             ordering[3] = std::make_pair(n1->right, n2->right);
 
-            auto cmp = [&](std::pair<KDNode*,KDNode*> p1, std::pair<KDNode*,KDNode*> p2) {
-                    return nodeDistance(p1.first, p1.second) < nodeDistance(p2.first, p2.second);};
+            auto cmp = [&](std::pair<KDNode *, KDNode *> p1, std::pair<KDNode *, KDNode *> p2)
+            { return nodeDistance(p1.first, p1.second) < nodeDistance(p2.first, p2.second); };
             std::sort(ordering, ordering + 4, cmp);
 
-            for (int o=0; o<4; ++o) {
-                bccpHDBSCAN(ordering[o].first, ordering[o].second, currDist, a, b);}
+            for (int o = 0; o < 4; ++o)
+            {
+                bccpHDBSCAN(ordering[o].first, ordering[o].second, currDist, a, b);
+            }
         }
     }
 }
 
-void splitParallelHelper(const int *first, const int *last, bool(*cond)(int), std::vector<int>& l, std::vector<int>& r)
+void splitParallelHelper(const int *first, const int *last, bool (*cond)(int), std::vector<int> &l, std::vector<int> &r)
 {
     std::vector<int> ll, rr;
-    for (const int* p = first; p < last; p++)
+    for (const int *p = first; p < last; p++)
     {
         if (cond(*p))
             ll.push_back(*p);
@@ -226,19 +229,19 @@ void splitParallelHelper(const int *first, const int *last, bool(*cond)(int), st
     mutex.unlock();
 }
 
-void splitParallel(const std::vector<int>& arr, bool(*cond)(int), std::vector<int>& l, std::vector<int>& r)
+void splitParallel(const std::vector<int> &arr, bool (*cond)(int), std::vector<int> &l, std::vector<int> &r)
 {
     size_t numThreads = std::thread::hardware_concurrency();
     size_t sz = arr.size() / numThreads;
-    std::vector<std::thread*> threads(numThreads);
+    std::vector<std::thread *> threads(numThreads);
 
-    for (int i = 0; i < numThreads-1; i++)
+    for (int i = 0; i < numThreads - 1; i++)
     {
         const int *p = arr.data() + i * sz;
         threads[i] = new std::thread(splitParallelHelper, p, p + sz, cond, std::ref(l), std::ref(r));
     }
-    threads[numThreads-1] = new std::thread(splitParallelHelper, arr.data() + (numThreads-1) * sz, arr.data() + arr.size(), cond, std::ref(l), std::ref(r));
-    
+    threads[numThreads - 1] = new std::thread(splitParallelHelper, arr.data() + (numThreads - 1) * sz, arr.data() + arr.size(), cond, std::ref(l), std::ref(r));
+
     for (int i = 0; i < numThreads; i++)
     {
         threads[i]->join();
@@ -246,33 +249,32 @@ void splitParallel(const std::vector<int>& arr, bool(*cond)(int), std::vector<in
     }
 }
 
-void parallelKruskal(std::vector<int>& sl1, std::vector<Edge>& result, Dsu& dsu)
+void parallelKruskal(std::vector<int> &sl1, std::vector<Edge> &result, Dsu &dsu)
 {
     for (auto x : sl1)
     {
-        auto& e = bccps[x];
+        auto &e = bccps[x];
         dsu.makeSet(e.u);
         dsu.makeSet(e.v);
     }
 
-    std::sort(sl1.begin(), sl1.end(), [](int x, int y) {
-        return bccps[x] < bccps[y];
-    });
+    std::sort(sl1.begin(), sl1.end(), [](int x, int y)
+              { return bccps[x] < bccps[y]; });
 
     for (auto x : sl1)
     {
-        auto& e = bccps[x];
+        auto &e = bccps[x];
         auto fs = dsu.findSet(e.u);
         if (fs == dsu.findSet(e.v) && fs)
             continue;
-            
+
         cost += e.weight;
         result.push_back(e);
         dsu.unionSet(e.u, e.v);
     }
 }
 
-int parallelGeoFilterKruskal(std::vector<Edge>& result, void (*bccp)(KDNode* n1, KDNode* n2, double& currDist, Point*& a, Point*& b))
+int parallelGeoFilterKruskal(std::vector<Edge> &result, void (*bccp)(KDNode *n1, KDNode *n2, double &currDist, Point *&a, Point *&b))
 {
     Dsu unionFind;
 
@@ -286,9 +288,8 @@ int parallelGeoFilterKruskal(std::vector<Edge>& result, void (*bccp)(KDNode* n1,
             ind[i] = i;
 
         std::vector<int> sl, su;
-        splitParallel(ind, [](int x) {
-            return pairs[x].first->size + pairs[x].second->size <= beta;
-        }, sl, su);
+        splitParallel(ind, [](int x)
+                      { return pairs[x].first->size + pairs[x].second->size <= beta; }, sl, su);
 
         phi = std::numeric_limits<double>::max();
         for (int i = 0; i < su.size(); i++)
@@ -305,19 +306,18 @@ int parallelGeoFilterKruskal(std::vector<Edge>& result, void (*bccp)(KDNode* n1,
             bccp(pairs[sl[i]].first, pairs[sl[i]].second, bccps[i].weight, bccps[i].u, bccps[i].v);
             ind2[i] = i;
         }
-        
+
         std::vector<int> sl1, sl2;
-        splitParallel(ind2, [](int x) {
-            return bccps[x].weight <= phi;
-        }, sl1, sl2);
+        splitParallel(ind2, [](int x)
+                      { return bccps[x].weight <= phi; }, sl1, sl2);
 
         parallelKruskal(sl1, result, unionFind);
 
-        std::vector<std::pair<KDNode*, KDNode*>> newPairs;
+        std::vector<std::pair<KDNode *, KDNode *>> newPairs;
 
         for (int i = 0; i < sl2.size() + su.size(); i++)
         {
-            std::pair<KDNode*, KDNode*>* p;
+            std::pair<KDNode *, KDNode *> *p;
             if (i < sl2.size())
                 p = &pairs[sl[sl2[i]]];
             else
@@ -325,7 +325,7 @@ int parallelGeoFilterKruskal(std::vector<Edge>& result, void (*bccp)(KDNode* n1,
             auto fs = unionFind.findSet(p->first->point);
             if (fs == unionFind.findSet(p->second->point) && fs)
                 continue;
-            
+
             newPairs.push_back(*p);
         }
 
@@ -337,7 +337,7 @@ int parallelGeoFilterKruskal(std::vector<Edge>& result, void (*bccp)(KDNode* n1,
     return cost;
 }
 
-void knnHelper(KDNode* node, Point& query, int k, int depth, std::priority_queue<std::pair<double, Point*>>& maxHeap)
+void knnHelper(KDNode *node, Point &query, int k, int depth, std::priority_queue<std::pair<double, Point *>> &maxHeap)
 {
     if (node == nullptr)
         return;
@@ -356,8 +356,8 @@ void knnHelper(KDNode* node, Point& query, int k, int depth, std::priority_queue
 
     int axis = depth % query.coords.size();
 
-    KDNode* first = nullptr;
-    KDNode* second = nullptr;
+    KDNode *first = nullptr;
+    KDNode *second = nullptr;
 
     if (query.coords[axis] < node->point->coords[axis])
     {
@@ -376,20 +376,21 @@ void knnHelper(KDNode* node, Point& query, int k, int depth, std::priority_queue
         knnHelper(second, query, k, depth + 1, maxHeap);
 }
 
-double knnDistance(Point& query, int k, KDNode* root)
+double knnDistance(Point &query, int k, KDNode *root)
 {
-    std::priority_queue<std::pair<double, Point*>> maxHeap;
+    std::priority_queue<std::pair<double, Point *>> maxHeap;
 
     knnHelper(root, query, k, 0, maxHeap);
 
-    while (maxHeap.empty() > 1) {
+    while (maxHeap.empty() > 1)
+    {
         maxHeap.pop();
     }
 
     return maxHeap.top().first;
 }
 
-void processCoreDistance(KDNode* nd)
+void processCoreDistance(KDNode *nd)
 {
     if (nd->size == 1)
     {
@@ -425,13 +426,13 @@ struct DendroNode
     size_t d;
 };
 
-void generateDendrogram(std::vector<Edge>& edges, std::vector<DendroNode>& dendro)
+void generateDendrogram(std::vector<Edge> &edges, std::vector<DendroNode> &dendro)
 {
     std::sort(edges.begin(), edges.end());
 
     Dsu uf;
 
-    for (auto& e : edges)
+    for (auto &e : edges)
     {
         uf.makeSet(e.u);
         uf.makeSet(e.v);
@@ -451,7 +452,7 @@ void generateDendrogram(std::vector<Edge>& edges, std::vector<DendroNode>& dendr
 
     dendro.resize(edges.size());
 
-    for(size_t i = 0; i < n-1; ++i)
+    for (size_t i = 0; i < n - 1; ++i)
     {
         auto u = uf.findSet(edges[i].u);
         auto v = uf.findSet(edges[i].v);
@@ -466,17 +467,30 @@ void generateDendrogram(std::vector<Edge>& edges, std::vector<DendroNode>& dendr
 
 int main()
 {
-    std::vector<Point> points = {
-        {3, 6}, {17, 15}, {13, 15}, {6, 12}, {9, 1}, {2, 7}, {10, 19},
-        {4, 5}, {12, 8}
-    };
-    std::vector<Point*> pointPtrs(points.size());
+    std::vector<Point> points;
+    std::ifstream file_("points.txt");
+    double x, y;
+
+    while (file_ >> x >> y)
+    {
+        points.push_back({x, y});
+    }
+
+    file_.close();
+
+    // Verificación de los primeros puntos
+    for (size_t i = 0; i < 10 && i < points.size(); ++i)
+    {
+        std::cout << "Point " << i + 1 << ": (" << points[i].coords[0] << ", " << points[i].coords[1] << ")\n";
+    }
+
+    std::vector<Point *> pointPtrs(points.size());
     for (int i = 0; i < points.size(); i++)
         pointPtrs[i] = &points[i];
 
     n = points.size();
-    
-    KDNode* root = nullptr;
+
+    KDNode *root = nullptr;
     buildKDTreeParallel(pointPtrs, root);
 
     // std::cout << "KD-Tree (In-order traversal):" << std::endl;
@@ -502,7 +516,7 @@ int main()
 
     std::ofstream file("emst.txt");
 
-    for (auto& p : points)
+    for (auto &p : points)
     {
         file << "0 ";
         for (auto x : p.coords)
@@ -511,15 +525,17 @@ int main()
     }
 
     ref = points.data();
-    for (auto& e : result)
+    for (auto &e : result)
     {
+        /*
         std::cout << '(';
         for (int i = 0; i < e.u->coords.size(); i++)
-            std::cout << e.u->coords[i] << ((i == e.u->coords.size()-1) ? ") " : ", ");
+            std::cout << e.u->coords[i] << ((i == e.u->coords.size() - 1) ? ") " : ", ");
         std::cout << "- (";
         for (int i = 0; i < e.v->coords.size(); i++)
-            std::cout << e.v->coords[i] << ((i == e.v->coords.size()-1) ? ") " : ", ");
+            std::cout << e.v->coords[i] << ((i == e.v->coords.size() - 1) ? ") " : ", ");
         std::cout << "- " << e.weight << '\n';
+        */
 
         file << "1 " << (e.u - ref) << ' ' << (e.v - ref) << '\n';
     }
@@ -542,18 +558,20 @@ int main()
     result.clear();
     bccps.clear();
     parallelGeoFilterKruskal(result, bccpHDBSCAN);
-    
+
     std::cout << "Edges of the HDBSCAN:\n";
 
-    for (auto& e : result)
+    for (auto &e : result)
     {
+        /*
         std::cout << '(';
         for (int i = 0; i < e.u->coords.size(); i++)
-            std::cout << e.u->coords[i] << ((i == e.u->coords.size()-1) ? ") " : ", ");
+            std::cout << e.u->coords[i] << ((i == e.u->coords.size() - 1) ? ") " : ", ");
         std::cout << "- (";
         for (int i = 0; i < e.v->coords.size(); i++)
-            std::cout << e.v->coords[i] << ((i == e.v->coords.size()-1) ? ") " : ", ");
+            std::cout << e.v->coords[i] << ((i == e.v->coords.size() - 1) ? ") " : ", ");
         std::cout << "- " << e.weight << '\n';
+        */
     }
 
     std::vector<DendroNode> dendro;
@@ -561,7 +579,7 @@ int main()
 
     std::ofstream file2("dendro.txt");
 
-    for (auto& x : dendro)
+    for (auto &x : dendro)
         file2 << x.a << ' ' << x.b << ' ' << x.c << ' ' << x.d << '\n';
 
     file2.close();
