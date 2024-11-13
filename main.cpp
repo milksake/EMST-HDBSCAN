@@ -221,7 +221,7 @@ struct Edge
 std::vector<std::pair<KDNode*, KDNode*>> pairs;
 std::mutex mutex;
 int beta;
-double phi;
+double phi, plo;
 std::vector<Edge> bccps;
 std::vector<double> coreDist;
 Point* ref;
@@ -741,6 +741,142 @@ void generateDendrogram(std::vector<Edge>& edges, std::vector<DendroNode>& dendr
     }
 }
 
+double nodeFarDistance(KDNode* n1, KDNode* n2)
+{
+    double result = 0.0;
+    for (int d = 0; d < n1->point->size(); d++)
+    {
+        double tmp = std::max(n1->mx[d], n2->mx[d]) - std::min(n1->mn[d], n2->mn[d]);
+        result += tmp * tmp;
+    }
+    return sqrt(result);
+}
+
+void findPair2(KDNode* a, KDNode* b, bool type, bool(*wellSeparated)(KDNode*, KDNode*), double(*dist1)(KDNode*, KDNode*), double(*dist2)(KDNode*, KDNode*), void(*bccp)(KDNode*, KDNode*, double&, Point*&, Point*&), Dsu& dsu)
+{
+    if (type)
+    {
+        if (dsu.findSet(a->point) && dsu.findSet(a->point) == dsu.findSet(b->point))
+            return;
+        double d = dist1(a, b);
+        if (d >= phi)
+            return;
+        d = dist2(a, b);
+        if (d < plo)
+            return;
+    }
+    else
+    {
+        if (dsu.findSet(a->point) && dsu.findSet(a->point) == dsu.findSet(b->point))
+            return;
+        if (a->size + b->size <= beta)
+            return;
+        double myDist = dist1(a, b);
+        if (myDist >= phi)
+            return;
+    }
+
+    if (wellSeparated(a, b))
+    {
+        if (type)
+        {
+            Edge e;
+            e.weight = std::numeric_limits<double>::max();
+            bccp(a, b, e.weight, e.u, e.v);
+            if (a->size + b->size <= beta && e.weight >= plo && e.weight < phi)
+            {
+                mutex.lock();
+                bccps.push_back(e);
+                mutex.unlock();
+            }
+        }
+        else
+        {
+            double nwDist = dist1(a, b);
+            mutex.lock();
+            phi = std::min(nwDist, phi);
+            mutex.unlock();
+        }
+        return;
+    }
+
+    if (getDiameter(a) < getDiameter(b))
+        std::swap(a, b);
+
+    if (a->size > MIN_PARALLEL_RECURSION_SIZE)
+    {
+        std::thread leftThread(findPair2, a->left, b, type, wellSeparated, dist1, dist2, bccp, std::ref(dsu));
+        std::thread rightThread(findPair2, a->right, b, type, wellSeparated, dist1, dist2, bccp, std::ref(dsu));
+
+        leftThread.join();
+        rightThread.join();
+    }
+    else
+    {
+        findPair2(a->left, b, type, wellSeparated, dist1, dist2, bccp, std::ref(dsu));
+        findPair2(a->right, b, type, wellSeparated, dist1, dist2, bccp, std::ref(dsu));
+    }
+}
+
+double diag(KDNode* u)
+{
+    double result = 0;
+    for (int d = 0; d < u->point->size(); ++d)
+    {
+        double tmp = u->mx[d] - u->mn[d];
+        result += tmp * tmp;
+    }
+    return sqrt(result);
+}
+
+void getRhoGetPairs(KDNode* node, bool type, bool(*wellSeparated)(KDNode*, KDNode*), double(*dist1)(KDNode*, KDNode*), double(*dist2)(KDNode*, KDNode*), void(*bccp)(KDNode*, KDNode*, double&, Point*&, Point*&), Dsu& dsu)
+{
+    if (node->size > 1 && ((!type && node->size > beta) || (type && std::max(diag(node), node->cdMx) >= plo)))
+    {
+        if (node->size > MIN_PARALLEL_RECURSION_SIZE)
+        {
+            std::thread leftThread(getRhoGetPairs, node->left, type, wellSeparated, dist1, dist2, bccp, std::ref(dsu));
+            std::thread rightThread(getRhoGetPairs, node->right, type, wellSeparated, dist1, dist2, bccp, std::ref(dsu));
+
+            leftThread.join();
+            rightThread.join();
+        }
+        else
+        {
+            getRhoGetPairs(node->left, type, wellSeparated, dist1, dist2, bccp, std::ref(dsu));
+            getRhoGetPairs(node->right, type, wellSeparated, dist1, dist2, bccp, std::ref(dsu));
+        }
+
+        findPair2(node->left, node->right, type, wellSeparated, dist1, dist2, bccp, dsu);
+    }
+}
+
+void parallelMemoGFK(KDNode* root, std::vector<Edge>& result, bool(*wellSeparated)(KDNode*, KDNode*), double(*dist1)(KDNode*, KDNode*), double(*dist2)(KDNode*, KDNode*), void(*bccp)(KDNode*, KDNode*, double&, Point*&, Point*&))
+{
+    Dsu unionFind;
+
+    beta = 2;
+    plo = 0;
+
+    while (result.size() < (n-1))
+    {
+        phi = std::numeric_limits<double>::max();
+        getRhoGetPairs(root, 0, wellSeparated, dist1, dist2, bccp, unionFind);
+        bccps.clear();
+        getRhoGetPairs(root, 1, wellSeparated, dist1, dist2, bccp, unionFind);
+
+        std::vector<int> sl1(bccps.size());
+        for (int i = 0; i < bccps.size(); i++)
+            sl1[i] = i;
+        
+        parallelKruskal(sl1, result, unionFind);
+
+        beta *= 2;
+        plo = phi;
+    }
+    
+}
+
 int main()
 {
     std::vector<Point> points = {
@@ -759,7 +895,7 @@ int main()
     // std::cout << "KD-Tree (In-order traversal):" << std::endl;
     // printKDTree(root);
 
-    wspd(root, wellSeparatedEuclidean);
+    // wspd(root, wellSeparatedEuclidean);
 
     // for (auto& p : pairs)
     // {
@@ -773,35 +909,35 @@ int main()
     // }
 
     std::vector<Edge> result;
-    parallelGeoFilterKruskal(result, bccpEuclidean);
+    // parallelGeoFilterKruskal(result, bccpEuclidean);
 
-    std::cout << "Edges of the EMST:\n";
+    // std::cout << "Edges of the EMST:\n";
 
-    std::ofstream file("emst.txt");
+    // std::ofstream file("emst.txt");
 
-    for (auto& p : points)
-    {
-        file << "0 ";
-        for (auto x : p.coords)
-            file << x << ' ';
-        file << '\n';
-    }
+    // for (auto& p : points)
+    // {
+    //     file << "0 ";
+    //     for (auto x : p.coords)
+    //         file << x << ' ';
+    //     file << '\n';
+    // }
 
     ref = points.data();
-    for (auto& e : result)
-    {
-        std::cout << '(';
-        for (int i = 0; i < e.u->coords.size(); i++)
-            std::cout << e.u->coords[i] << ((i == e.u->coords.size()-1) ? ") " : ", ");
-        std::cout << "- (";
-        for (int i = 0; i < e.v->coords.size(); i++)
-            std::cout << e.v->coords[i] << ((i == e.v->coords.size()-1) ? ") " : ", ");
-        std::cout << "- " << e.weight << '\n';
+    // for (auto& e : result)
+    // {
+    //     std::cout << '(';
+    //     for (int i = 0; i < e.u->coords.size(); i++)
+    //         std::cout << e.u->coords[i] << ((i == e.u->coords.size()-1) ? ") " : ", ");
+    //     std::cout << "- (";
+    //     for (int i = 0; i < e.v->coords.size(); i++)
+    //         std::cout << e.v->coords[i] << ((i == e.v->coords.size()-1) ? ") " : ", ");
+    //     std::cout << "- " << e.weight << '\n';
 
-        file << "1 " << (e.u - ref) << ' ' << (e.v - ref) << '\n';
-    }
+    //     file << "1 " << (e.u - ref) << ' ' << (e.v - ref) << '\n';
+    // }
 
-    file.close();
+    // file.close();
 
     int minPts = 2;
     coreDist.resize(points.size());
@@ -833,15 +969,41 @@ int main()
         std::cout << "- " << e.weight << '\n';
     }
 
-    std::vector<DendroNode> dendro;
-    generateDendrogram(result, dendro);
+    // std::vector<DendroNode> dendro;
+    // generateDendrogram(result, dendro);
 
-    std::ofstream file2("dendro.txt");
+    // std::ofstream file2("dendro.txt");
 
-    for (auto& x : dendro)
-        file2 << x.a << ' ' << x.b << ' ' << x.c << ' ' << x.d << '\n';
+    // for (auto& x : dendro)
+    //     file2 << x.a << ' ' << x.b << ' ' << x.c << ' ' << x.d << '\n';
 
-    file2.close();
+    // file2.close();
+
+
+    result.clear();
+    parallelMemoGFK(root, result, wellSeparatedHDBSCAN, [](KDNode* u, KDNode* v) {
+        double tmp = std::max(nodeDistance(u, v), u->cdMn);
+        tmp = std::max(tmp, v->cdMn);
+        return tmp;
+    }, [](KDNode* u, KDNode* v) {
+        double tmp = std::max(nodeFarDistance(u, v), u->cdMx);
+        tmp = std::max(tmp, v->cdMx);
+        return tmp;
+    }, bccpHDBSCAN);
+
+    
+    std::cout << "Edges of the HDBSCAN (MEMOGFK):\n";
+
+    for (auto& e : result)
+    {
+        std::cout << '(';
+        for (int i = 0; i < e.u->coords.size(); i++)
+            std::cout << e.u->coords[i] << ((i == e.u->coords.size()-1) ? ") " : ", ");
+        std::cout << "- (";
+        for (int i = 0; i < e.v->coords.size(); i++)
+            std::cout << e.v->coords[i] << ((i == e.v->coords.size()-1) ? ") " : ", ");
+        std::cout << "- " << e.weight << '\n';
+    }
 
     return 0;
 }
